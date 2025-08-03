@@ -1,5 +1,4 @@
 let domain = "https://navix.site"; // 机场域名已固定
-let loginCookies = "SESSION=M2E4YWQ3ZjQtN2E0Ni00Yjk3LWI5OGEtYzdjZWFlNzJhMmEx; loginToken=UID1939_0913a79b81af453db4a2431fafdf2ea6"; // 手动填入的Cookie
 let user = "这里填邮箱";
 let pass = "这里填密码";
 let checkinResult;
@@ -10,11 +9,25 @@ export default {
     async fetch(request, env, ctx) {
         await initializeVariables(env);
         const url = new URL(request.url);
+
+        // 如果用户访问更新页面
+        if (url.pathname == `/${pass}/update`) {
+            if (request.method === 'POST') {
+                return handleCookieUpdate(request, env);
+            } else {
+                return new Response(updateFormHtml(), {
+                    headers: { 'Content-Type': 'text/html;charset=UTF-8' }
+                });
+            }
+        }
+
+        // 其他请求处理（如TG推送和签到）
         if (url.pathname == "/tg") {
             await sendMessage();
         } else if (url.pathname == `/${pass}`) {
-            await checkin();
+            await checkin(env);
         }
+
         return new Response(checkinResult, {
             status: 200,
             headers: { 'Content-Type': 'text/plain;charset=UTF-8' }
@@ -25,7 +38,7 @@ export default {
         console.log('Cron job started for Navix.site');
         try {
             await initializeVariables(env);
-            await checkin();
+            await checkin(env);
             console.log('Cron job completed successfully for Navix.site');
         } catch (error) {
             console.error('Cron job failed for Navix.site:', error);
@@ -40,11 +53,81 @@ async function initializeVariables(env) {
     pass = env.MM || env.PASS || pass;
     BotToken = env.TGTOKEN || BotToken;
     ChatID = env.TGID || ChatID;
-    loginCookies = env.COOKIES || loginCookies; // 环境变量优先
+    
+    // 从 KV 空间读取 Cookies，如果不存在则设为空字符串
+    let loginCookies = await env.NAVIX_KV.get('loginCookies') || '';
+    
+    // 调试信息
     const displayUser = user.length > 6 ? `${user.substring(0, 3)}****${user.substring(user.length - 3)}` : user;
     const displayPass = pass.length > 4 ? `${pass.substring(0, 1)}****${pass.substring(pass.length - 1)}` : pass;
-    const displayCookies = loginCookies ? `${loginCookies.substring(0, 10)}****` : "未填写";
+    const displayCookies = loginCookies ? `${loginCookies.substring(0, 10)}****` : "未设置";
+    
     checkinResult = `地址: ${domain}\n账号: ${displayUser}\n密码: ${displayPass}\n\nCookie: ${displayCookies}\nTG推送: ${ChatID ? `${ChatID.substring(0, 1)}****${ChatID.substring(ChatID.length - 3)}` : "未启用"}`;
+}
+
+async function handleCookieUpdate(request, env) {
+    try {
+        const formData = await request.formData();
+        const loginCookies = formData.get('loginCookies');
+        
+        if (!loginCookies) {
+            return new Response('更新失败：Cookies 不能为空', { status: 400 });
+        }
+
+        await env.NAVIX_KV.put('loginCookies', loginCookies);
+
+        const successHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>更新成功</title>
+            </head>
+            <body>
+                <h1>Cookies 更新成功！</h1>
+                <p>新的 Cookies 已保存到 KV 空间。</p>
+                <a href="/${pass}/update">返回更新页面</a>
+            </body>
+            </html>
+        `;
+        return new Response(successHtml, {
+            headers: { 'Content-Type': 'text/html;charset=UTF-8' }
+        });
+
+    } catch (error) {
+        return new Response(`更新失败: ${error.message}`, { status: 500 });
+    }
+}
+
+function updateFormHtml() {
+    return `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>更新 Navix.site Cookies</title>
+            <style>
+                body { font-family: sans-serif; padding: 2em; line-height: 1.6; }
+                form { max-width: 600px; margin: 0 auto; padding: 2em; border: 1px solid #ccc; border-radius: 8px; }
+                label, input { display: block; margin-bottom: 1em; width: 100%; }
+                input[type="text"] { padding: 0.5em; font-size: 1em; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+                button { padding: 0.75em 1.5em; font-size: 1em; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+                button:hover { background-color: #0056b3; }
+            </style>
+        </head>
+        <body>
+            <form method="POST">
+                <h1>更新 Navix.site Cookies</h1>
+                <p>请从浏览器开发者工具中复制完整的 Cookie 字符串。</p>
+                <label for="loginCookies">Cookies (SESSION=...; loginToken=...):</label>
+                <input type="text" id="loginCookies" name="loginCookies" placeholder="SESSION=xxx; loginToken=xxx">
+                <button type="submit">提交并更新</button>
+            </form>
+        </body>
+        </html>
+    `;
 }
 
 async function sendMessage(msg = "") {
@@ -76,15 +159,18 @@ async function sendMessage(msg = "") {
     }
 }
 
-async function checkin() {
+async function checkin(env) {
     try {
-        if (!domain || !loginCookies) {
-            throw new Error('必需的配置参数缺失 (Navix.site)，请手动填入 Cookies');
+        // 从 KV 空间读取 Cookie
+        const loginCookies = await env.NAVIX_KV.get('loginCookies');
+
+        if (!loginCookies) {
+            throw new Error('必需的 Cookies 缺失，请访问更新页面设置。');
         }
+        
+        console.log('Using combined cookies for check-in:', loginCookies);
 
-        console.log('Using provided cookies for check-in:', loginCookies);
-
-        // --- 直接使用提供的 Cookie 执行签到请求 ---
+        // --- 执行签到请求 ---
         const checkinUrl = `${domain}/api/sign-in`;
         console.log(`Attempting check-in to ${checkinUrl}`);
 
@@ -122,7 +208,7 @@ async function checkin() {
             } else if (checkinJson.code === 0 && checkinJson.message && checkinJson.message.includes('今日已签到')) {
                 checkinResult = `ℹ️ Navix.site 今日已签到。`;
             } else {
-                checkinResult = `🤔 Navix.site 签到结果: ${checkinJson.message || '未知消息'}`;
+                checkinResult = `🤔 Navix.site 签到结果: ${checkinJson.message || '未知消息'}\n记得七天一续哦！`;
             }
         } catch (e) {
             console.error('签到响应不是有效的 JSON。意外的响应格式或错误。');
