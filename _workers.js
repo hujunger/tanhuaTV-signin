@@ -122,7 +122,7 @@ async function checkin() {
             } else if (checkinJson.code === 0 && checkinJson.message && checkinJson.message.includes('今日已签到')) {
                 checkinResult = `ℹ️ Navix.site 今日已签到。`;
             } else {
-                checkinResult = `🤔 Navix.site 签到失败或结果未知: ${checkinJson.message || '未知消息'}`;
+                checkinResult = `🤔 Navix.site 签到结果: ${checkinJson.message || '未知消息'}`;
             }
         } catch (e) {
             console.error('签到响应不是有效的 JSON。意外的响应格式或错误。');
