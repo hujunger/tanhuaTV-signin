@@ -1,6 +1,6 @@
 let domain = "https://navix.site"; // 机场域名已固定
 let user = "这里填邮箱";
-let pass = "这里填密码";
+let pass = "checkin";
 let checkinResult;
 let BotToken = '';
 let ChatID = '';
