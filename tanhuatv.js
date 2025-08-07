@@ -54,15 +54,15 @@ async function initializeVariables(env) {
     BotToken = env.TGTOKEN || BotToken;
     ChatID = env.TGID || ChatID;
     
-    // 从 KV 空间读取 Cookies，如果不存在则设为空字符串
+    // 从 KV 空间读取 Cookies
     let loginCookies = await env.NAVIX_KV.get('loginCookies') || '';
     
     // 调试信息
     const displayUser = user.length > 6 ? `${user.substring(0, 3)}****${user.substring(user.length - 3)}` : user;
     const displayPass = pass.length > 4 ? `${pass.substring(0, 1)}****${pass.substring(pass.length - 1)}` : pass;
-    const displayCookies = loginCookies ? `${loginCookies.substring(0, 10)}****` : "未设置";
+    const cookiesCount = loginCookies.split('&').length;
     
-    checkinResult = `地址: ${domain}\n账号: ${displayUser}\n密码: ${displayPass}\n\nCookie: ${displayCookies}\nTG推送: ${ChatID ? `${ChatID.substring(0, 1)}****${ChatID.substring(ChatID.length - 3)}` : "未启用"}`;
+    checkinResult = `地址: ${domain}\n账号: ${displayUser}\n密码: ${displayPass}\n\nCookie数量: ${cookiesCount}\nTG推送: ${ChatID ? `${ChatID.substring(0, 1)}****${ChatID.substring(ChatID.length - 3)}` : "未启用"}`;
 }
 
 async function handleCookieUpdate(request, env) {
@@ -120,9 +120,9 @@ function updateFormHtml() {
         <body>
             <form method="POST">
                 <h1>更新 Navix.site Cookies</h1>
-                <p>请从浏览器开发者工具中复制完整的 Cookie 字符串。</p>
-                <label for="loginCookies">Cookies (SESSION=...; loginToken=...):</label>
-                <input type="text" id="loginCookies" name="loginCookies" placeholder="SESSION=xxx; loginToken=xxx">
+                <p>请从浏览器开发者工具中复制完整的 Cookie 字符串。多个账号请用 & 符号连接。</p>
+                <label for="loginCookies">Cookies (SESSION=...; loginToken=...&SESSION=...; loginToken=...):</label>
+                <input type="text" id="loginCookies" name="loginCookies" placeholder="SESSION=xxx; loginToken=xxx&SESSION=yyy; loginToken=zzz">
                 <button type="submit">提交并更新</button>
             </form>
         </body>
@@ -160,64 +160,72 @@ async function sendMessage(msg = "") {
 }
 
 async function checkin(env) {
+    let allResults = [];
     try {
-        // 从 KV 空间读取 Cookie
-        const loginCookies = await env.NAVIX_KV.get('loginCookies');
-
-        if (!loginCookies) {
+        // 从 KV 空间读取 Cookie 字符串
+        const combinedCookies = await env.NAVIX_KV.get('loginCookies');
+        if (!combinedCookies) {
             throw new Error('必需的 Cookies 缺失，请访问更新页面设置。');
         }
-        
-        console.log('Using combined cookies for check-in:', loginCookies);
 
-        // --- 执行签到请求 ---
-        const checkinUrl = `${domain}/api/sign-in`;
-        console.log(`Attempting check-in to ${checkinUrl}`);
+        // 按 '&' 分割成多个账号的 Cookie 数组
+        const cookiesArray = combinedCookies.split('&');
+        console.log(`Processing ${cookiesArray.length} accounts...`);
 
-        const checkinResponse = await fetch(checkinUrl, {
-            method: 'POST',
-            headers: {
-                'Cookie': loginCookies,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                'Origin': domain,
-                'Referer': `${domain}/sign_in`,
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Content-Length': '0',
-                'Content-Type': 'application/json',
-            },
-            body: '',
-        });
+        // 遍历数组，对每个账号进行签到
+        for (const [index, loginCookies] of cookiesArray.entries()) {
+            console.log(`\n--- Starting check-in for account ${index + 1} ---`);
+            
+            // --- 执行签到请求 ---
+            const checkinUrl = `${domain}/api/sign-in`;
+            const checkinResponse = await fetch(checkinUrl, {
+                method: 'POST',
+                headers: {
+                    'Cookie': loginCookies,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'Accept-Encoding': 'gzip, deflate, br, zstd',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+                    'Origin': domain,
+                    'Referer': `${domain}/sign_in`,
+                    'Sec-Fetch-Dest': 'empty',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Site': 'same-origin',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Length': '0',
+                    'Content-Type': 'application/json',
+                },
+                body: '',
+            });
 
-        console.log('Navix.site Checkin Response Status:', checkinResponse.status);
+            console.log(`Account ${index + 1} Checkin Response Status:`, checkinResponse.status);
 
-        const checkinResponseText = await checkinResponse.text();
-        console.log('Navix.site Checkin Raw Response:', checkinResponseText);
+            const checkinResponseText = await checkinResponse.text();
+            console.log(`Account ${index + 1} Checkin Raw Response:`, checkinResponseText);
 
-        try {
-            const checkinJson = JSON.parse(checkinResponseText);
-            console.log('Navix.site Checkin Result JSON:', checkinJson);
+            let currentResult;
+            try {
+                const checkinJson = JSON.parse(checkinResponseText);
+                console.log(`Account ${index + 1} Checkin Result JSON:`, checkinJson);
 
-            if (checkinJson.code === 1) {
-                checkinResult = `🎉 Navix.site 签到成功！ ${checkinJson.message || ''}`;
-            } else if (checkinJson.code === 0 && checkinJson.message && checkinJson.message.includes('今日已签到')) {
-                checkinResult = `ℹ️ Navix.site 今日已签到。`;
-            } else {
-                checkinResult = `🤔 Navix.site 签到结果: ${checkinJson.message || '未知消息'}\n记得七天一续哦！`;
+                if (checkinJson.code === 1) {
+                    currentResult = `🎉 账号 ${index + 1} 签到成功！ ${checkinJson.message || ''}`;
+                } else if (checkinJson.code === 0 && checkinJson.message && checkinJson.message.includes('今日已签到')) {
+                    currentResult = `ℹ️ 账号 ${index + 1} 今日已签到。`;
+                } else {
+                    currentResult = `🤔 账号 ${index + 1} 签到结果: ${checkinJson.message || '未知消息'}\n记得续期哦：https://tanhuatv.cfip.nyc.mn/`;
+                }
+            } catch (e) {
+                console.error(`账号 ${index + 1} 签到响应解析失败。`);
+                currentResult = `❌ 账号 ${index + 1} 签到响应解析失败: ${e.message}. 原始响应: ${checkinResponseText.substring(0, 200)}...`;
+                if (checkinResponseText.includes('未登录') || checkinResponseText.includes('请先登录')) {
+                    currentResult += ` (可能登录失效或会话过期)`;
+                }
             }
-        } catch (e) {
-            console.error('签到响应不是有效的 JSON。意外的响应格式或错误。');
-            checkinResult = `❌ Navix.site 签到响应解析失败: ${e.message}. 原始响应: ${checkinResponseText.substring(0, 200)}...`;
-            if (checkinResponseText.includes('未登录') || checkinResponseText.includes('请先登录')) {
-                 checkinResult += ` (可能登录失效或会话过期)`;
-            }
+            allResults.push(currentResult);
         }
 
+        checkinResult = allResults.join('\n\n');
         await sendMessage(checkinResult);
         return checkinResult;
 
