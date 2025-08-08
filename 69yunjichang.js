@@ -1,3 +1,4 @@
+
 let domain = "这里填机场域名";
 let user = "这里填邮箱";
 let pass = "这里填密码";
@@ -5,8 +6,41 @@ let 签到结果;
 let BotToken = '';
 let ChatID = '';
 
+// --- 新增的辅助函数 ---
+
+/**
+ * 将不同单位的流量值转换为 GB
+ * @param {number} value - 流量数值
+ * @param {string} unit - 流量单位 (TB, GB, MB)
+ * @returns {number} - 转换后的 GB 数值
+ */
+function convertToGB(value, unit) {
+    switch (unit.toUpperCase()) {
+        case 'TB':
+            return value * 1024;
+        case 'MB':
+            return value / 1024;
+        case 'GB':
+        default:
+            return value;
+    }
+}
+
+/**
+ * 根据使用百分比创建进度条
+ * @param {number} percentage - 使用百分比
+ * @returns {string} - 格式化的进度条字符串
+ */
+function createProgressBar(percentage) {
+    const totalBlocks = 10;
+    const filledBlocks = Math.round((percentage / 100) * totalBlocks);
+    const emptyBlocks = totalBlocks - filledBlocks;
+    return `[${'■'.repeat(filledBlocks)}${'□'.repeat(emptyBlocks)}]`;
+}
+
+// ----------------------
+
 export default {
-    // HTTP 请求处理函数保持不变
     async fetch(request, env, ctx) {
         await initializeVariables(env);
         const url = new URL(request.url);
@@ -21,7 +55,6 @@ export default {
         });
     },
 
-    // 定时任务处理函数
     async scheduled(controller, env, ctx) {
         console.log('Cron job started');
         try {
@@ -75,14 +108,12 @@ async function sendMessage(msg = "") {
     }
 }
 
-// checkin 函数修改
 async function checkin() {
     try {
         if (!domain || !user || !pass) {
             throw new Error('必需的配置参数缺失');
         }
 
-        // 登录请求
         const loginResponse = await fetch(`${domain}/auth/login`, {
             method: 'POST',
             headers: {
@@ -116,10 +147,8 @@ async function checkin() {
         }
         const cookies = cookieHeader.split(',').map(cookie => cookie.split(';')[0]).join('; ');
 
-        // 等待确保登录状态
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 签到请求
         const checkinResponse = await fetch(`${domain}/user/checkin`, {
             method: 'POST',
             headers: {
@@ -141,7 +170,6 @@ async function checkin() {
             throw new Error(`解析签到响应失败: ${checkinText}`);
         }
 
-        // 获取用户面板页面并提取流量
         const userPanelResponse = await fetch(`${domain}/user`, {
             method: 'GET',
             headers: {
@@ -157,34 +185,60 @@ async function checkin() {
 
         const userPanelHtml = await userPanelResponse.text();
 
-        // ------------------------- 新的抓取逻辑 -------------------------
-        // 匹配包含“剩余流量”的整个 div
-        const remainingBlockRegex = /<div class="d-flex flex-column ml-3 mr-5">.*?<p class="text-dark-50">剩余流量<\/p>.*?<\/div>/s;
-        const remainingBlockMatch = userPanelHtml.match(remainingBlockRegex);
-        
-        let remainingTrafficInfo = "无法获取剩余流量";
-        if (remainingBlockMatch && remainingBlockMatch[0]) {
-            // 在找到的 div 中再寻找 <strong> 标签
-            const valueRegex = /<strong>(.*?)<\/strong>/;
-            const valueMatch = remainingBlockMatch[0].match(valueRegex);
-            if (valueMatch && valueMatch[1]) {
-                remainingTrafficInfo = `剩余流量：${valueMatch[1].trim()}`;
-            }
-        }
+        // ------------------------- 修改后的流量抓取和进度条逻辑 -------------------------
+        let trafficDetails = "";
 
-        // 匹配已用流量
-        const usedTrafficRegex = /已用流量：(.*?)\s*<\/p>/;
-        const usedMatch = userPanelHtml.match(usedTrafficRegex);
-        
-        let usedTrafficInfo = "无法获取已用流量";
-        if (usedMatch && usedMatch[1]) {
-            usedTrafficInfo = `已用流量：${usedMatch[1].trim()}`;
+        const remainingRegex = /<div class="d-flex flex-column ml-3 mr-5">.*?<strong>([\d.]+)\s*(GB|MB|TB)<\/strong>.*?<p class="text-dark-50">剩余流量<\/p>.*?<\/div>/s;
+        const usedRegex = /已用流量：([\d.]+)\s*(GB|MB|TB)\s*<\/p>/;
+
+        const remainingMatch = userPanelHtml.match(remainingRegex);
+        const usedMatch = userPanelHtml.match(usedRegex);
+
+        if (usedMatch && remainingMatch) {
+            try {
+                const usedValue = parseFloat(usedMatch[1]);
+                const usedUnit = usedMatch[2];
+                const remainingValue = parseFloat(remainingMatch[1]);
+                const remainingUnit = remainingMatch[2];
+
+                const usedGB = convertToGB(usedValue, usedUnit);
+                const remainingGB = convertToGB(remainingValue, remainingUnit);
+                const totalGB = usedGB + remainingGB;
+
+                const usagePercentage = totalGB > 0 ? (usedGB / totalGB) * 100 : 0;
+                const progressBar = createProgressBar(usagePercentage);
+
+                trafficDetails = `流量详情: ${usedGB.toFixed(2)} GB / ${totalGB.toFixed(2)} GB\n` +
+                                 `使用进度: ${progressBar} ${usagePercentage.toFixed(1)}%`;
+            } catch (e) {
+                // 如果解析出错，则回退
+                trafficDetails = "流量解析出错";
+            }
+        } else {
+            // 如果新的正则表达式匹配失败，回退到旧的纯文本方式
+            const remainingBlockRegex = /<div class="d-flex flex-column ml-3 mr-5">.*?<p class="text-dark-50">剩余流量<\/p>.*?<\/div>/s;
+            const remainingBlockMatch = userPanelHtml.match(remainingBlockRegex);
+            let remainingTrafficInfo = "无法获取剩余流量";
+            if (remainingBlockMatch && remainingBlockMatch[0]) {
+                const valueRegex = /<strong>(.*?)<\/strong>/;
+                const valueMatch = remainingBlockMatch[0].match(valueRegex);
+                if (valueMatch && valueMatch[1]) {
+                    remainingTrafficInfo = `剩余流量：${valueMatch[1].trim()}`;
+                }
+            }
+    
+            const oldUsedTrafficRegex = /已用流量：(.*?)\s*<\/p>/;
+            const oldUsedMatch = userPanelHtml.match(oldUsedTrafficRegex);
+            let usedTrafficInfo = "无法获取已用流量";
+            if (oldUsedMatch && oldUsedMatch[1]) {
+                usedTrafficInfo = `已用流量：${oldUsedMatch[1].trim()}`;
+            }
+            trafficDetails = `${remainingTrafficInfo}\n${usedTrafficInfo}`;
         }
-        // -----------------------------------------------------------
+        // --------------------------------------------------------------------
         
-        // 拼接最终结果
         const checkinMsg = checkinResult.msg || (checkinResult.ret === 1 ? '签到成功' : '签到失败');
-        签到结果 = `🎉 签到结果 🎉\n${checkinMsg}\n\n${remainingTrafficInfo}\n${usedTrafficInfo}`;
+        签到结果 = `🎉 签到结果 🎉\n${checkinMsg}\n\n${trafficDetails}`;
 
         await sendMessage(签到结果);
         return 签到结果;
