@@ -23,7 +23,7 @@ comment_options = [
 
 # 你的 Cookie (直接从浏览器开发者工具中复制)
 # 重要：Cookie会过期，需要定期更新
-cookies_str = ''
+cookies_str = '${{ secrets.Cookies }}'
 
 # 每次评论后的等待时间（秒）
 delay_seconds = 10
