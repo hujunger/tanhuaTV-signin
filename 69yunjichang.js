@@ -1,4 +1,4 @@
-// =========================================================================================
+// =auff======================================================================================
 // ==                                 Configuration                                     ==
 // =========================================================================================
 // Telegram Bot Configuration (Recommended to set via Worker Environment Variables)
@@ -23,6 +23,9 @@ export default {
         if (url.pathname === "/admin") {
             return handleAdminRequest(request, env);
         }
+        if (url.pathname === "/status") {
+            return handleStatusRequest(request, env);
+        }
         if (url.pathname === "/checkin" || url.pathname === "/tg") {
             const results = await processAllAccounts(env);
             return new Response(results.join('\n\n---\n\n'), {
@@ -31,62 +34,63 @@ export default {
             });
         }
         
-// Get the origin (e.g., https://your.worker.dev) from the request URL
-const { origin } = new URL(request.url);
+        // Get the origin (e.g., https://your.worker.dev) from the request URL
+        const { origin } = new URL(request.url);
 
-// Create the HTML response body
-const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>69云机场自动签到脚本</title>
-    <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            height: 100vh; 
-            margin: 0; 
-            background-color: #f0f2f5;
-            text-align: center;
-        }
-        .container { 
-            background: #fff; 
-            padding: 2rem 3rem; 
-            border-radius: 8px; 
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
-        }
-        h1 { margin-top: 0; color: #333; }
-        p { color: #555; }
-        ul { list-style: none; padding: 0; margin-top: 1.5rem; }
-        li { margin-bottom: 1rem; }
-        a { 
-            text-decoration: none; 
-            color: #007bff;
-            font-size: 1.1rem;
-            font-weight: 500;
-        }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>✅ 脚本正在运行······</h1>
-        <ul>
-            <li><a href="${origin}/checkin">手动签到</a></li>
-            <li><a href="${origin}/admin">管理账户</a></li>
-        </ul>
-    </div>
-</body>
-</html>`;
+        // Create the HTML response body
+        const html = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>69云机场自动签到脚本</title>
+            <style>
+                body { 
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+                    display: flex; 
+                    justify-content: center; 
+                    align-items: center; 
+                    height: 100vh; 
+                    margin: 0; 
+                    background-color: #f0f2f5;
+                    text-align: center;
+                }
+                .container { 
+                    background: #fff; 
+                    padding: 2rem 3rem; 
+                    border-radius: 8px; 
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+                }
+                h1 { margin-top: 0; color: #333; }
+                p { color: #555; }
+                ul { list-style: none; padding: 0; margin-top: 1.5rem; }
+                li { margin-bottom: 1rem; }
+                a { 
+                    text-decoration: none; 
+                    color: #007bff;
+                    font-size: 1.1rem;
+                    font-weight: 500;
+                }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>✅ 脚本正在运行······</h1>
+                <ul>
+                    <li><a href="${origin}/checkin">手动签到</a></li>
+                    <li><a href="${origin}/status">查看账户状态</a></li>
+                    <li><a href="${origin}/admin">管理账户</a></li>
+                </ul>
+            </div>
+        </body>
+        </html>`;
 
-return new Response(html, {
-    status: 200,
-    headers: { 'Content-Type': 'text/html;charset=UTF-8' }
-});
+        return new Response(html, {
+            status: 200,
+            headers: { 'Content-Type': 'text/html;charset=UTF-8' }
+        });
     },
 
     async scheduled(controller, env, ctx) {
@@ -119,7 +123,7 @@ async function handleAdminRequest(request, env) {
         const action = formData.get('action');
 
         if (password !== adminPassword) {
-            return new Response(getLoginPage(true), { status: 403, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
+            return new Response(getLoginPage(true, '/admin'), { status: 403, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
         }
 
         // Action 'save': handle saving the account configurations
@@ -131,7 +135,8 @@ async function handleAdminRequest(request, env) {
                 const user = formData.get(`user_${i}`);
                 const pass = formData.get(`pass_${i}`);
                 if (domain && user && pass) {
-                    accounts.push({ domain, user, pass });
+                    // Trim whitespace from user input before saving
+                    accounts.push({ domain: domain.trim(), user: user.trim(), pass: pass });
                 }
                 i++;
             }
@@ -152,7 +157,32 @@ async function handleAdminRequest(request, env) {
     }
 
     // For GET requests, always show the login page.
-    return new Response(getLoginPage(false), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
+    return new Response(getLoginPage(false, '/admin'), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
+}
+
+/**
+ * MODIFIED: Handles requests to the /status endpoint. Access is now public.
+ * @param {Request} request The incoming request
+ * @param {object} env The environment variables and bindings
+ * @returns {Response} An HTML response for the status page
+ */
+async function handleStatusRequest(request, env) {
+    if (!env.SETTINGS_KV) {
+        return new Response("KV namespace 'SETTINGS_KV' is not bound. Please configure it in Worker settings.", { status: 500 });
+    }
+
+    // Directly fetch and display status on any request to this path
+    const accounts = await getAccountsFromKV(env);
+    const statuses = [];
+    for (const account of accounts) {
+        const status = await fetchAccountStatus(account);
+        statuses.push(status);
+        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between accounts
+    }
+    
+    return new Response(getStatusPageHTML(statuses), {
+        headers: { 'Content-Type': 'text/html;charset=UTF-8' },
+    });
 }
 
 
@@ -328,12 +358,105 @@ async function checkin(account) {
     return `账户: ${user}\n结果: ${checkinResultText}`;
 }
 
+/**
+ * Fetches the status for a single account without performing a check-in.
+ * @param {object} account The account object with domain, user, and pass
+ * @returns {Promise<object>} An object containing the account's status
+ */
+async function fetchAccountStatus(account) {
+    const { domain, user, pass } = account;
+    const status = {
+        user: user.substring(0, 3) + '****' + user.substring(user.lastIndexOf('@')),
+        domain: domain,
+        checkinStatus: '未知',
+        trafficDetails: '未能获取',
+        progressBar: `[${'□'.repeat(10)}] 0.0%`,
+        error: null
+    };
+
+    try {
+        if (!domain || !user || !pass) {
+            throw new Error('账户信息不完整');
+        }
+
+        const fullDomain = domain.startsWith('http') ? domain : `https://${domain}`;
+
+        const loginResponse = await fetch(`${fullDomain}/auth/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+            },
+            body: JSON.stringify({ email: user, passwd: pass, remember_me: 'on' }),
+        });
+
+        if (!loginResponse.ok) throw new Error(`登录请求失败: ${loginResponse.status}`);
+        
+        const loginJson = await loginResponse.json();
+        if (loginJson.ret !== 1) throw new Error(`登录失败: ${loginJson.msg || '未知错误'}`);
+
+        const cookieHeader = loginResponse.headers.get('set-cookie');
+        if (!cookieHeader) throw new Error('登录成功但未收到Cookie');
+        const cookies = cookieHeader.split(',').map(cookie => cookie.split(';')[0]).join('; ');
+        
+        const userPanelResponse = await fetch(`${fullDomain}/user`, {
+            method: 'GET',
+            headers: { 'Cookie': cookies, 'User-Agent': 'Mozilla/5.0' }
+        });
+        if (!userPanelResponse.ok) throw new Error('获取用户面板页面失败');
+        
+        const userPanelHtml = await userPanelResponse.text();
+
+        // 1. Parse Check-in Status
+        if (userPanelHtml.includes('disabled="disabled">已签到</a>')) {
+            status.checkinStatus = '已签到';
+        } else {
+            status.checkinStatus = '未签到';
+        }
+
+        // 2. Parse Traffic Info
+        const remainingRegex = /<div class="d-flex flex-column ml-3 mr-5">.*?<strong>([\d.]+)\s*(GB|MB|TB)<\/strong>.*?<p class="text-dark-50">剩余流量<\/p>.*?<\/div>/s;
+        const usedRegex = /已用流量：([\d.]+)\s*(GB|MB|TB)\s*<\/p>/;
+        const remainingMatch = userPanelHtml.match(remainingRegex);
+        const usedMatch = userPanelHtml.match(usedRegex);
+
+        if (usedMatch && remainingMatch) {
+            const usedValue = parseFloat(usedMatch[1]);
+            const usedUnit = usedMatch[2];
+            const remainingValue = parseFloat(remainingMatch[1]);
+            const remainingUnit = remainingMatch[2];
+
+            const convertToGB = (v, u) => (u.toUpperCase() === 'TB' ? v * 1024 : u.toUpperCase() === 'MB' ? v / 1024 : v);
+            const createBar = p => `[${'■'.repeat(Math.round(p/10))}${'□'.repeat(10-Math.round(p/10))}]`;
+
+            const usedGB = convertToGB(usedValue, usedUnit);
+            const remainingGB = convertToGB(remainingValue, remainingUnit);
+            const totalGB = usedGB + remainingGB;
+            const percentage = totalGB > 0 ? (usedGB / totalGB) * 100 : 0;
+            
+            status.trafficDetails = `${usedGB.toFixed(2)} GB / ${totalGB.toFixed(2)} GB`;
+            status.progressBar = `${createBar(percentage)} ${percentage.toFixed(1)}%`;
+        }
+
+    } catch (e) {
+        status.error = e.message;
+        status.checkinStatus = '获取失败';
+    }
+
+    return status;
+}
 
 // =========================================================================================
 // ==                          Admin Page HTML Generation                               ==
 // =========================================================================================
 
-function getLoginPage(hasError = false) {
+/**
+ * Generates the HTML for the login page.
+ * @param {boolean} [hasError=false] - Whether to display an error message.
+ * @param {string} [action='/admin'] - The form action URL.
+ * @returns {string} The HTML content for the login page.
+ */
+function getLoginPage(hasError = false, action = '/admin') {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -355,7 +478,7 @@ function getLoginPage(hasError = false) {
     <div class="login-container">
         <h1>管理员密码</h1>
         ${hasError ? '<p>Invalid Password. Please try again.</p>' : ''}
-        <form method="POST" action="/admin">
+        <form method="POST" action="${action}">
             <input type="password" name="password" placeholder="请输入管理员密码" required>
             <input type="submit" value="登录">
         </form>
@@ -498,6 +621,84 @@ function getEditorPage(accounts, password, isSaved) {
             });
         }
     </script>
+</body>
+</html>`;
+}
+
+/**
+ * MODIFIED: Generates the HTML for the Status Dashboard page.
+ * @param {Array<object>} statuses - An array of account status objects.
+ * @returns {string} The HTML content for the status page.
+ */
+function getStatusPageHTML(statuses) {
+    let cardsHtml = statuses.map(s => `
+        <div class="status-card ${s.error ? 'error' : ''}">
+            <div class="card-header">
+                <span class="email">${s.user}</span>
+                <span class="domain">${s.domain}</span>
+            </div>
+            <div class="card-body">
+                <div class="status-item">
+                    <strong>签到状态:</strong> 
+                    <span class="status-badge ${s.checkinStatus === '已签到' ? 'checked-in' : (s.checkinStatus === '未签到' ? 'not-checked-in' : 'error-status')}">
+                        ${s.checkinStatus}
+                    </span>
+                </div>
+                ${s.error ? `
+                <div class="status-item">
+                    <strong>错误信息:</strong> <span class="error-message">${s.error}</span>
+                </div>
+                ` : `
+                <div class="status-item">
+                    <strong>流量使用:</strong> ${s.trafficDetails}
+                </div>
+                <div class="status-item">
+                    <strong>使用进度:</strong> <code class="progress-bar">${s.progressBar}</code>
+                </div>
+                `}
+            </div>
+        </div>
+    `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账户状态面板</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: auto; }
+        h1 { text-align: center; color: #333; margin-bottom: 10px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        .header .btn { padding: 10px 15px; border: none; background-color: #007bff; color: white; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 16px; display: inline-block; }
+        #status-container { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        .status-card { background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden; border-left: 5px solid #007bff; }
+        .status-card.error { border-left-color: #dc3545; }
+        .card-header { background: #f8f9fa; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; border-bottom: 1px solid #e9ecef; }
+        .email { font-weight: 600; color: #333; }
+        .domain { color: #6c757d; }
+        .card-body { padding: 15px; }
+        .status-item { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .status-item:last-child { margin-bottom: 0; }
+        .status-badge { padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; color: white; }
+        .status-badge.checked-in { background-color: #28a745; }
+        .status-badge.not-checked-in { background-color: #ffc107; color: #333; }
+        .status-badge.error-status { background-color: #6c757d; }
+        .error-message { color: #dc3545; font-weight: 500; }
+        .progress-bar { font-family: monospace; background: #e9ecef; padding: 2px 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>账户状态面板</h1>
+        <div class="header">
+            <a href="/status" class="btn">刷新数据</a>
+        </div>
+        <div id="status-container">
+            ${cardsHtml.length > 0 ? cardsHtml : '<h2>没有配置任何账户，请先前往<a href="/admin">管理账户</a>页面添加。</h2>'}
+        </div>
+    </div>
 </body>
 </html>`;
 }
