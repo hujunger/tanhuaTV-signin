@@ -1,4 +1,4 @@
-// =auff======================================================================================
+// =========================================================================================
 // ==                                 Configuration                                     ==
 // =========================================================================================
 // Telegram Bot Configuration (Recommended to set via Worker Environment Variables)
@@ -94,10 +94,10 @@ export default {
     },
 
     async scheduled(controller, env, ctx) {
-        console.log('Cron job started for all accounts');
+        console.log('Cron job started for enabled accounts');
         await initializeConfig(env);
         await processAllAccounts(env);
-        console.log('Cron job completed for all accounts');
+        console.log('Cron job completed for enabled accounts');
     }
 };
 
@@ -135,12 +135,38 @@ async function handleAdminRequest(request, env) {
                 const user = formData.get(`user_${i}`);
                 const pass = formData.get(`pass_${i}`);
                 if (domain && user && pass) {
-                    // Trim whitespace from user input before saving
-                    accounts.push({ domain: domain.trim(), user: user.trim(), pass: pass });
+                    // Trim whitespace from user input and check for autoCheckin flag
+                    accounts.push({ 
+                        domain: domain.trim(), 
+                        user: user.trim(), 
+                        pass: pass,
+                        autoCheckin: formData.has(`autocheckin_${i}`)
+                    });
                 }
                 i++;
             }
             
+            // Handle batch-added accounts
+            const batchData = formData.get('batch_accounts');
+            if (batchData) {
+                const lines = batchData.trim().split(/\r?\n/);
+                for (const line of lines) {
+                    const parts = line.split(':');
+                    if (parts.length >= 2) {
+                        const user = parts[0].trim();
+                        const pass = parts.slice(1).join(':').trim(); // Handle passwords that might contain ':'
+                        if (user && pass) {
+                            accounts.push({
+                                domain: '69yun69.com',
+                                user: user,
+                                pass: pass,
+                                autoCheckin: true
+                            });
+                        }
+                    }
+                }
+            }
+
             await env.SETTINGS_KV.put(KV_ACCOUNTS_KEY, JSON.stringify(accounts, null, 2));
             // After saving, show the editor page again with a success message
             const savedAccounts = await getAccountsFromKV(env);
@@ -160,29 +186,45 @@ async function handleAdminRequest(request, env) {
     return new Response(getLoginPage(false, '/admin'), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
 }
 
+
 /**
- * MODIFIED: Handles requests to the /status endpoint. Access is now public.
+ * NEW: Handles requests to the /status endpoint for viewing account stats.
  * @param {Request} request The incoming request
  * @param {object} env The environment variables and bindings
  * @returns {Response} An HTML response for the status page
  */
 async function handleStatusRequest(request, env) {
+    const adminPassword = env.ADMIN_PASSWORD;
+    if (!adminPassword) {
+        return new Response("ADMIN_PASSWORD is not set.", { status: 500 });
+    }
     if (!env.SETTINGS_KV) {
-        return new Response("KV namespace 'SETTINGS_KV' is not bound. Please configure it in Worker settings.", { status: 500 });
+        return new Response("KV namespace 'SETTINGS_KV' is not bound.", { status: 500 });
     }
 
-    // Directly fetch and display status on any request to this path
-    const accounts = await getAccountsFromKV(env);
-    const statuses = [];
-    for (const account of accounts) {
-        const status = await fetchAccountStatus(account);
-        statuses.push(status);
-        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between accounts
+    if (request.method === 'POST') {
+        const formData = await request.formData();
+        const password = formData.get('password');
+
+        if (password !== adminPassword) {
+            return new Response(getLoginPage(true, "/status"), { status: 403, headers: { 'Content-Type': 'text/html;charset=UTF-8' } });
+        }
+        
+        const accounts = await getAccountsFromKV(env);
+        const statuses = [];
+        for (const account of accounts) {
+            const status = await fetchAccountStatus(account);
+            statuses.push(status);
+            await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between accounts
+        }
+        
+        return new Response(getStatusPageHTML(statuses, adminPassword), {
+            headers: { 'Content-Type': 'text/html;charset=UTF-8' },
+        });
     }
-    
-    return new Response(getStatusPageHTML(statuses), {
-        headers: { 'Content-Type': 'text/html;charset=UTF-8' },
-    });
+
+    // For GET requests, always show the login page for the status dashboard
+    return new Response(getLoginPage(false, "/status"), { headers: { 'Content-Type': 'text/html;charset=UTF-8' }});
 }
 
 
@@ -207,7 +249,7 @@ async function initializeConfig(env) {
 }
 
 /**
- * Fetches accounts from KV and runs the check-in process for each.
+ * Fetches accounts from KV and runs the check-in process for each enabled account.
  * @param {object} env The environment variables and bindings
  * @returns {Promise<string[]>} A promise that resolves to an array of result strings
  */
@@ -233,8 +275,18 @@ async function processAllAccounts(env) {
         await sendMessage(errorMsg);
         return [errorMsg];
     }
+    
+    // Filter for accounts where autoCheckin is not explicitly false
+    const enabledAccounts = accounts.filter(acc => acc.autoCheckin !== false);
 
-    for (const account of accounts) {
+    if (enabledAccounts.length === 0) {
+        const msg = "所有账户均已禁用自动签到，任务跳过。";
+        console.log(msg);
+        // Do not send a Telegram message for this case to avoid noise.
+        return [msg];
+    }
+
+    for (const account of enabledAccounts) {
         if (account.domain && !account.domain.startsWith('http')) {
             account.domain = `https://${account.domain}`;
         }
@@ -359,18 +411,21 @@ async function checkin(account) {
 }
 
 /**
- * Fetches the status for a single account without performing a check-in.
+ * MODIFIED: Fetches status for a single account, now including the subscription link.
  * @param {object} account The account object with domain, user, and pass
  * @returns {Promise<object>} An object containing the account's status
  */
 async function fetchAccountStatus(account) {
     const { domain, user, pass } = account;
     const status = {
+        // Generate a simple ID from the user string for the HTML element
+        id: user.replace(/[^a-zA-Z0-9]/g, ''),
         user: user.substring(0, 3) + '****' + user.substring(user.lastIndexOf('@')),
         domain: domain,
         checkinStatus: '未知',
         trafficDetails: '未能获取',
         progressBar: `[${'□'.repeat(10)}] 0.0%`,
+        subscriptionUrl: '未能获取',
         error: null
     };
 
@@ -438,6 +493,15 @@ async function fetchAccountStatus(account) {
             status.progressBar = `${createBar(percentage)} ${percentage.toFixed(1)}%`;
         }
 
+        // 3. Parse Subscription Link
+        const subRegex = /(https?:\/\/[^/"]+\/link\/[a-zA-Z0-9]+)/;
+        const subMatch = userPanelHtml.match(subRegex);
+        if (subMatch && subMatch[1]) {
+            // Provide the generic Clash subscription link as a default
+            status.subscriptionUrl = subMatch[1] + '?clash=1';
+        }
+
+
     } catch (e) {
         status.error = e.message;
         status.checkinStatus = '获取失败';
@@ -451,7 +515,7 @@ async function fetchAccountStatus(account) {
 // =========================================================================================
 
 /**
- * Generates the HTML for the login page.
+ * MODIFIED: Generates the HTML for the login page.
  * @param {boolean} [hasError=false] - Whether to display an error message.
  * @param {string} [action='/admin'] - The form action URL.
  * @returns {string} The HTML content for the login page.
@@ -488,7 +552,10 @@ function getLoginPage(hasError = false, action = '/admin') {
 }
 
 function getEditorPage(accounts, password, isSaved) {
-    let accountsHtml = accounts.map((acc, index) => `
+    let accountsHtml = accounts.map((acc, index) => {
+        // Default autoCheckin to true if it's not defined (for backward compatibility)
+        const isChecked = acc.autoCheckin !== false;
+        return `
         <div class="account-card" id="account-card-${index}">
             <button type="button" class="delete-btn" onclick="removeAccount(${index})">&times;</button>
             <h3>账号 ${index + 1}</h3>
@@ -504,8 +571,12 @@ function getEditorPage(accounts, password, isSaved) {
                 <label for="pass_${index}">密码 (Password)</label>
                 <input type="password" id="pass_${index}" name="pass_${index}" value="${acc.pass || ''}" required>
             </div>
+            <div class="form-group-checkbox">
+                <input type="checkbox" id="autocheckin_${index}" name="autocheckin_${index}" ${isChecked ? 'checked' : ''}>
+                <label for="autocheckin_${index}">自动签到 (Auto Check-in)</label>
+            </div>
         </div>
-    `).join('');
+    `}).join('');
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -516,14 +587,17 @@ function getEditorPage(accounts, password, isSaved) {
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        h1 { text-align: center; color: #333; }
+        h1, h2 { text-align: center; color: #333; }
         #accounts-container { display: grid; grid-template-columns: 1fr; gap: 20px; }
         .account-card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; position: relative; background: #fafafa; }
         .form-group { margin-bottom: 15px; }
+        .form-group-checkbox { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
         label { display: block; margin-bottom: 5px; font-weight: 500; color: #555; }
-        input[type="text"], input[type="email"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        .form-group-checkbox label { margin-bottom: 0; }
+        input[type="text"], input[type="email"], input[type="password"], textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        textarea { min-height: 120px; resize: vertical; font-family: monospace; }
         .btn { padding: 12px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: 500; text-align: center; display: inline-block; }
-        .btn-save { background-color: #28a745; color: white; width: 100%; margin-top: 10px; }
+        .btn-save { background-color: #28a745; color: white; width: 100%; margin-top: 20px; }
         .btn-add { background-color: #007bff; color: white; margin-top: 20px; }
         .delete-btn { position: absolute; top: 10px; right: 10px; background: #dc3545; color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 16px; line-height: 24px; text-align: center; }
         .notification { background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 20px; }
@@ -536,17 +610,27 @@ function getEditorPage(accounts, password, isSaved) {
         <form id="config-form" method="POST" action="/admin">
             <input type="hidden" name="password" value="${password}">
             <input type="hidden" name="action" value="save">
+            
+            <h2>当前账户</h2>
             <div id="accounts-container">
                 ${accountsHtml}
             </div>
             <button type="button" class="btn btn-add" onclick="addAccount()">+ 添加新账户</button>
+            
+            <div class="account-card" style="margin-top: 30px;">
+                <h2>批量添加账户 (Batch Add)</h2>
+                <div class="form-group">
+                    <label for="batch_accounts">每行一个，格式为 <code>email:pass</code>，将使用默认域名 <code>69yun69.com</code></label>
+                    <textarea id="batch_accounts" name="batch_accounts" placeholder="user1@example.com:password123\nuser2@example.com:password456"></textarea>
+                </div>
+            </div>
+
             <button type="submit" class="btn btn-save">保存所有配置</button>
         </form>
     </div>
     <script>
         let accountCounter = ${accounts.length};
 
-        // Hide notification after a few seconds
         if (document.getElementById('notification')) {
             setTimeout(() => {
                 document.getElementById('notification').style.display = 'none';
@@ -574,6 +658,10 @@ function getEditorPage(accounts, password, isSaved) {
                     <label for="pass_\${index}">密码 (Password)</label>
                     <input type="password" id="pass_\${index}" name="pass_\${index}" required>
                 </div>
+                <div class="form-group-checkbox">
+                    <input type="checkbox" id="autocheckin_\${index}" name="autocheckin_\${index}" checked>
+                    <label for="autocheckin_\${index}">自动签到 (Auto Check-in)</label>
+                </div>
             \`;
             container.appendChild(card);
         }
@@ -582,7 +670,6 @@ function getEditorPage(accounts, password, isSaved) {
             const card = document.getElementById(\`account-card-\${index}\`);
             if (card && confirm('确定要删除这个账户吗？')) {
                 card.remove();
-                // After removal, re-index all form elements to ensure data is posted correctly without gaps.
                 reindexAccounts();
             }
         }
@@ -590,32 +677,25 @@ function getEditorPage(accounts, password, isSaved) {
         function reindexAccounts() {
             const container = document.getElementById('accounts-container');
             const cards = container.querySelectorAll('.account-card');
-            accountCounter = cards.length; // Reset counter
+            accountCounter = cards.length;
             cards.forEach((card, newIndex) => {
                 card.id = \`account-card-\${newIndex}\`;
-                card.querySelector('h3').textContent = \`Account \${newIndex + 1}\`;
+                card.querySelector('h3').textContent = \`账号 \${newIndex + 1}\`;
                 card.querySelector('.delete-btn').setAttribute('onclick', \`removeAccount(\${newIndex})\`);
                 
-                const labels = card.querySelectorAll('label');
-                const inputs = card.querySelectorAll('input');
-
-                // This is a robust way to re-index. We map old id to new id.
-                const idMap = {};
+                const inputs = card.querySelectorAll('input[name]');
                 inputs.forEach(input => {
-                    if (input.name) {
-                        const baseName = input.name.split('_')[0];
-                        const oldId = input.id;
-                        const newId = \`\${baseName}_\${newIndex}\`;
-                        idMap[oldId] = newId;
-                        input.name = newId;
-                        input.id = newId;
-                    }
-                });
-
-                labels.forEach(label => {
-                    const oldFor = label.getAttribute('for');
-                    if (idMap[oldFor]) {
-                        label.setAttribute('for', idMap[oldFor]);
+                    const nameAttr = input.getAttribute('name');
+                    if (nameAttr) {
+                        const baseName = nameAttr.split('_')[0];
+                        const newName = \`\${baseName}_\${newIndex}\`;
+                        input.name = newName;
+                        input.id = newName;
+                        
+                        const label = card.querySelector(\`label[for='\${nameAttr}']\`);
+                        if(label) {
+                            label.setAttribute('for', newName);
+                        }
                     }
                 });
             });
@@ -626,11 +706,12 @@ function getEditorPage(accounts, password, isSaved) {
 }
 
 /**
- * MODIFIED: Generates the HTML for the Status Dashboard page.
+ * MODIFIED: Generates the HTML for the Status Dashboard page, now with subscription links.
  * @param {Array<object>} statuses - An array of account status objects.
+ * @param {string} password - The admin password for refresh functionality.
  * @returns {string} The HTML content for the status page.
  */
-function getStatusPageHTML(statuses) {
+function getStatusPageHTML(statuses, password) {
     let cardsHtml = statuses.map(s => `
         <div class="status-card ${s.error ? 'error' : ''}">
             <div class="card-header">
@@ -655,6 +736,13 @@ function getStatusPageHTML(statuses) {
                 <div class="status-item">
                     <strong>使用进度:</strong> <code class="progress-bar">${s.progressBar}</code>
                 </div>
+                ${s.subscriptionUrl && s.subscriptionUrl !== '未能获取' ? `
+                <div class="status-item sub-item">
+                    <strong>订阅链接:</strong>
+                    <input class="sub-link-input" type="text" value="${s.subscriptionUrl}" readonly id="sub-link-${s.id}">
+                    <button class="copy-btn" onclick="copyToClipboard('sub-link-${s.id}', this)">复制</button>
+                </div>
+                ` : ''}
                 `}
             </div>
         </div>
@@ -671,7 +759,7 @@ function getStatusPageHTML(statuses) {
         .container { max-width: 900px; margin: auto; }
         h1 { text-align: center; color: #333; margin-bottom: 10px; }
         .header { text-align: center; margin-bottom: 20px; }
-        .header .btn { padding: 10px 15px; border: none; background-color: #007bff; color: white; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 16px; display: inline-block; }
+        .header .btn { padding: 10px 15px; border: none; background-color: #007bff; color: white; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 16px; }
         #status-container { display: grid; grid-template-columns: 1fr; gap: 20px; }
         .status-card { background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden; border-left: 5px solid #007bff; }
         .status-card.error { border-left-color: #dc3545; }
@@ -679,7 +767,7 @@ function getStatusPageHTML(statuses) {
         .email { font-weight: 600; color: #333; }
         .domain { color: #6c757d; }
         .card-body { padding: 15px; }
-        .status-item { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .status-item { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .status-item:last-child { margin-bottom: 0; }
         .status-badge { padding: 3px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; color: white; }
         .status-badge.checked-in { background-color: #28a745; }
@@ -687,18 +775,47 @@ function getStatusPageHTML(statuses) {
         .status-badge.error-status { background-color: #6c757d; }
         .error-message { color: #dc3545; font-weight: 500; }
         .progress-bar { font-family: monospace; background: #e9ecef; padding: 2px 5px; border-radius: 4px; }
+        .sub-item { flex-wrap: nowrap; }
+        .sub-link-input { flex-grow: 1; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; background-color: #f8f9fa; }
+        .copy-btn { padding: 4px 10px; border: 1px solid #007bff; background-color: #fff; color: #007bff; border-radius: 4px; cursor: pointer; }
+        .copy-btn:hover { background-color: #e7f3ff; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>账户状态面板</h1>
         <div class="header">
-            <a href="/status" class="btn">刷新数据</a>
+            <form method="POST" action="/status" style="display:inline;">
+                <input type="hidden" name="password" value="${password}">
+                <button type="submit" class="btn">刷新数据</button>
+            </form>
         </div>
         <div id="status-container">
             ${cardsHtml.length > 0 ? cardsHtml : '<h2>没有配置任何账户，请先前往<a href="/admin">管理账户</a>页面添加。</h2>'}
         </div>
     </div>
+    <script>
+        function copyToClipboard(elementId, buttonElement) {
+            const input = document.getElementById(elementId);
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(input.value).then(() => {
+                    const originalText = buttonElement.textContent;
+                    buttonElement.textContent = '已复制!';
+                    setTimeout(() => { buttonElement.textContent = originalText; }, 1500);
+                }).catch(err => {
+                    console.error('Could not copy text: ', err);
+                    alert('复制失败');
+                });
+            } else {
+                // Fallback for older browsers
+                input.select();
+                document.execCommand('copy');
+                const originalText = buttonElement.textContent;
+                buttonElement.textContent = '已复制!';
+                setTimeout(() => { buttonElement.textContent = originalText; }, 1500);
+            }
+        }
+    </script>
 </body>
 </html>`;
 }
